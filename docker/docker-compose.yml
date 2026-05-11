@@ -1,0 +1,58 @@
+services:
+  magi:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ipc: none
+    stdin_open: true
+    tty: true
+    volumes:
+      # Pi agent dir for sessions, credentials, settings (persisted across restarts)
+      # Pre-create on host: mkdir -p ~/.pi/magi-agent
+      - ${HOME}/.pi/magi-agent:/home/piuser/.pi/agent
+
+      # All extensions — directory mount preserves lib/ structure
+      - ../src/extension:/home/piuser/.pi/agent/extensions:ro
+
+      # Definitions — one level up from extensions/ to match __dirname + "../definitions/"
+      - ../src/definitions:/home/piuser/.pi/agent/definitions:ro
+
+      # Theme JSON files
+      - ../src/themes:/home/piuser/.pi/themes:ro
+
+      # Damage Control YAML files
+      - ../src/damage-control:/home/piuser/.pi/damage-control:ro
+
+      # The codebase the agents will work on
+      - ${PWD}:/workspace
+
+    working_dir: /workspace
+
+  regular-pi:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ipc: none
+    stdin_open: true
+    tty: true
+    volumes:
+      # Pi agent dir for sessions, credentials, settings (persisted across restarts)
+      # Pre-create on host: mkdir -p ~/.pi/regular-pi-agent
+      - ${HOME}/.pi/regular-pi-agent:/home/piuser/.pi/agent
+
+      # Damage-control extension only — no lib/ dependency.
+      - ../src/extension/damage-control.ts:/home/piuser/.pi/agent/extensions/damage-control.ts:ro
+
+      # Damage Control YAML files
+      - ../src/damage-control:/home/piuser/.pi/damage-control:ro
+
+      # The codebase the agents will work on
+      - ${PWD}:/workspace
+
+    working_dir: /workspace
