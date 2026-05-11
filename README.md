@@ -4,7 +4,7 @@ A Dockerized [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
 
 ## Why MAGI?
 
-I came across Pi by accident on YouTube — [I Hated Every Coding Agent, So I Built My Own — Mario Zechner (Pi)](https://www.youtube.com/watch?v=Dli5slNaJu0) — and the idea really resonated with me.                                                                                                                                                                      
+I came across Pi by accident on YouTube [I Hated Every Coding Agent, So I Built My Own — Mario Zechner (Pi)](https://www.youtube.com/watch?v=Dli5slNaJu0), and the idea really resonated with me.                                                                                                                                                                      
 Later I came across [IndyDevDan's take](https://www.youtube.com/watch?v=f8cfH5XX-XU) and I really liked the idea of how he was setting up a team of AI agents working together.
 
 I wanted to give it a shot because in my head I think I could benefit from a fixed stack of AI agents for my daily dev tasks:
