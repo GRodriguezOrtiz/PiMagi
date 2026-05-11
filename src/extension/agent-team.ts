@@ -20,13 +20,6 @@ import {
 	DefaultResourceLoader,
 	getAgentDir,
 	SessionManager,
-	createReadTool,
-	createBashTool,
-	createEditTool,
-	createWriteTool,
-	createGrepTool,
-	createFindTool,
-	createLsTool,
 } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
@@ -96,18 +89,16 @@ function parseAgentFile(filePath: string): AgentDef  {
 
 // ── Tool spec mapper ────────────────────────────────────────────────────────
 
-function toolsFromSpec(spec: string, cwd: string) {
-	const map: Record<string, () => any> = {
-		read:  () => createReadTool(cwd),
-		bash:  () => createBashTool(cwd),
-		edit:  () => createEditTool(cwd),
-		write: () => createWriteTool(cwd),
-		grep:  () => createGrepTool(cwd),
-		find:  () => createFindTool(cwd),
-		ls:    () => createLsTool(cwd),
-	};
+// `createAgentSession({ tools })` is a NAME ALLOWLIST over pi's built-in
+// tool registry — pass strings, NOT constructed Tool objects. Passing objects
+// silently disables every tool: the active-tool list won't match the registry
+// by name, the system prompt renders `Available tools: (none)`, and zero tool
+// schemas are shipped to the model.
+const BUILTIN_TOOLS = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
+
+function toolsFromSpec(spec: string): string[] {
 	return spec.split(",").map(s => s.trim().toLowerCase()).filter(Boolean)
-		.map(name => map[name]?.()).filter(Boolean);
+		.filter(name => BUILTIN_TOOLS.has(name));
 }
 
 // ── Extension ────────────────────────────────────────────────────────────────
@@ -299,7 +290,16 @@ export default function (pi: ExtensionAPI) {
 			const loader = new DefaultResourceLoader({
 				cwd: ctx.cwd,
 				agentDir: getAgentDir(),
-				systemPromptOverride: () => state.def.systemPrompt,
+				// IMPORTANT: do NOT use `systemPromptOverride` here. Its `base` arg
+				// is the user's optional system-prompt file (usually undefined),
+				// not pi's default preamble. Returning anything makes
+				// buildSystemPrompt take the customPrompt short-circuit and drop
+				// the entire `Available tools:` block, leaving the sub-agent blind.
+				//
+				// `appendSystemPromptOverride` injects text AFTER the default
+				// preamble (which contains the tools list + calling conventions),
+				// so the persona rides on top of a fully wired tool environment.
+				appendSystemPromptOverride: () => [state.def.systemPrompt],
 				additionalExtensionPaths: state.def.extensionPaths,
 				extensionFactories: [],
 			});
@@ -307,7 +307,7 @@ export default function (pi: ExtensionAPI) {
 
 			const { session } = await createAgentSession({
 				sessionManager: SessionManager.inMemory(),
-				tools: toolsFromSpec(state.def.tools, ctx.cwd),
+				tools: toolsFromSpec(state.def.tools),
 				resourceLoader: loader,
 			});
 
