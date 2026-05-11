@@ -1,0 +1,168 @@
+# Damage-Control rules — cross-agent baseline
+#
+# Consumed by src/extension/damage-control.ts.
+# Place a copy at one of these locations to activate:
+#   - <repo>/.pi/damage-control/damage-control-rules.yaml   (project-level, preferred)
+#   - ~/.pi/damage-control/damage-control-rules.yaml        (global fallback)
+#
+# Schema:
+#   bashToolPatterns: list of { pattern (regex), reason, ask? }
+#   zeroAccessPaths / readOnlyPaths / noDeletePaths:
+#     list of either:
+#       - "string-pattern"
+#       - { pattern: "...", reason: "...", ask: true|false }
+#
+# Pattern syntax for path rules:
+#   - trailing "/"   → directory containment match
+#   - "*"            → any chars within one path segment
+#   - "**"           → any chars across segments
+#   - "?"            → single char
+#   - "~/..."        → expanded to $HOME
+#
+# Per-agent tool restrictions (Melchior/Balthasar read-only, etc.) are
+# already enforced by each agent's `tools:` frontmatter. This file
+# encodes BEHAVIORAL rules that apply regardless of which agent is
+# currently active.
+
+bashToolPatterns:
+  # ── Git: write / history operations ──────────────────────────────────────
+  # Melchior's spec forbids these explicitly. Balthasar/Orchestrator have
+  # no business touching git. Casper may, but force-push & hard reset
+  # should always confirm.
+  - pattern: '\bgit\s+(commit|push|pull|merge|rebase|reset|checkout|add|cherry-pick|tag)\b'
+    reason: "Git write/history operation — only Casper may perform these, and only with explicit instruction."
+    ask: true
+  - pattern: '\bgit\s+stash\s+(push|pop|drop|clear)\b'
+    reason: "git stash mutation — confirm before altering working tree state."
+    ask: true
+  - pattern: '\bgit\s+push\s+(-f|--force|--force-with-lease)\b'
+    reason: "Force push rewrites remote history."
+    ask: true
+  - pattern: '\bgit\s+reset\s+--hard\b'
+    reason: "git reset --hard discards uncommitted work."
+    ask: true
+  - pattern: '\bgit\s+clean\s+-[a-zA-Z]*[fdx]'
+    reason: "git clean -f permanently deletes untracked files."
+    ask: true
+
+  # ── Catastrophic filesystem operations ───────────────────────────────────
+  - pattern: '\brm\s+(-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR])\s+(/|~|\$HOME|\*)'
+    reason: "Recursive force-delete of root/home/wildcard — never allowed."
+  - pattern: '\b(mkfs|wipefs|shred)\b'
+    reason: "Disk-level destructive operation."
+  - pattern: '\bdd\s+[^|;]*\bof=/dev/'
+    reason: "dd writing to a raw device."
+  - pattern: ':\(\)\s*\{\s*:\|:&\s*\};:'
+    reason: "Fork bomb."
+
+  # ── Privilege escalation ─────────────────────────────────────────────────
+  - pattern: '(^|[\s;|&])sudo\b'
+    reason: "sudo requires explicit human authorization."
+    ask: true
+  - pattern: '(^|[\s;|&])su\s+'
+    reason: "User-switching requires explicit human authorization."
+    ask: true
+
+  # ── Pipe-to-shell / remote code execution ────────────────────────────────
+  - pattern: '(curl|wget|fetch)\s+[^|;]*\|\s*(bash|sh|zsh|python|perl|node)\b'
+    reason: "Piping remote content directly into a shell/interpreter."
+    ask: true
+  - pattern: '\beval\s+["`$]'
+    reason: "Dynamic shell eval — review intent before executing."
+    ask: true
+
+  # ── Package manager mutations (lockfiles, install scripts) ───────────────
+  - pattern: '\b(npm|pnpm|yarn)\s+(install|update|add|remove|upgrade|i\b|dedupe)\b'
+    reason: "Node package manager mutation — modifies lockfile and may run install scripts."
+    ask: true
+  - pattern: '\bcomposer\s+(install|update|require|remove)\b'
+    reason: "composer dependency mutation."
+    ask: true
+
+  # ── Symfony / Doctrine destructive commands ──────────────────────────────
+  - pattern: '\bbin/console\s+doctrine:(schema:drop|database:drop)'
+    reason: "Schema/database destruction via doctrine."
+  - pattern: '\bbin/console\s+doctrine:migrations:execute\s+[^|;]*--down\b'
+    reason: "Doctrine migration rollback."
+    ask: true
+  - pattern: '\bbin/console\s+cache:clear\s+--env=prod\b'
+    reason: "Production cache clear from a dev session — confirm intent."
+    ask: true
+
+  # ── Bulk-delete patterns (easy to fat-finger) ────────────────────────────
+  - pattern: '\bfind\b[^|;]*\s-delete\b'
+    reason: "find -delete is irreversible; review the predicate carefully."
+    ask: true
+  - pattern: '\|\s*xargs\s+(-[a-zA-Z]*\s+)*rm\b'
+    reason: "xargs rm — review the upstream filter."
+    ask: true
+
+  # ── Wide chmod / chown ───────────────────────────────────────────────────
+  - pattern: '\bchmod\s+-R\s+[0-7]*7[0-7]*\b'
+    reason: "Recursive world-writable chmod."
+  - pattern: '\bchmod\s+777\b'
+    reason: "World-writable permissions are almost never correct."
+
+  # ── Outbound exfil-ish patterns (cheap signal, not perfect) ──────────────
+  - pattern: '\b(curl|wget)\b[^|;]*\b(\.env|id_rsa|\.ssh/|credentials|secrets)\b'
+    reason: "Network call referencing a sensitive file path."
+
+zeroAccessPaths:
+  # Secrets — no agent has any legitimate reason to read these.
+  - pattern: "~/.ssh/"
+    reason: "SSH keys are off-limits to all agents."
+  - pattern: "~/.aws/"
+    reason: "AWS credentials are off-limits."
+  - pattern: "~/.config/gh/"
+    reason: "GitHub CLI credentials."
+  - pattern: "~/.netrc"
+    reason: "Plaintext credentials file."
+  - pattern: ".env.local"
+    reason: "Local secrets file."
+  - pattern: ".env.prod"
+    reason: "Production secrets file."
+  - pattern: ".env.production"
+    reason: "Production secrets file."
+
+readOnlyPaths:
+  # Source-of-truth docs — agents must follow, not edit ad-hoc.
+  - pattern: "AGENTS.md"
+    reason: "AGENTS.md is the layering source of truth — only edit with explicit user instruction."
+    ask: true
+  - pattern: ".agent/AGENTS.md"
+    reason: ".agent/AGENTS.md is a source of truth — only edit with explicit user instruction."
+    ask: true
+  - pattern: "src/definitions/"
+    reason: "Agent definitions — only edit with explicit user instruction."
+    ask: true
+
+  # Lockfiles & generated config — change only via the tool that owns them.
+  - pattern: "composer.lock"
+    reason: "composer.lock should only be modified via `composer` commands."
+    ask: true
+  - pattern: "package-lock.json"
+    reason: "package-lock.json should only be modified via npm/pnpm/yarn."
+    ask: true
+  - pattern: "yarn.lock"
+    reason: "yarn.lock should only be modified via yarn."
+    ask: true
+  - pattern: "pnpm-lock.yaml"
+    reason: "pnpm-lock.yaml should only be modified via pnpm."
+    ask: true
+
+  # VCS internals
+  - pattern: ".git/"
+    reason: ".git/ is managed by git — never write directly."
+
+noDeletePaths:
+  - pattern: "AGENTS.md"
+    reason: "Do not delete AGENTS.md."
+  - pattern: ".agent/"
+    reason: "Do not delete the .agent/ directory."
+  - pattern: "src/definitions/"
+    reason: "Do not delete agent definitions."
+  - pattern: "tests/"
+    reason: "Do not delete tests; change them deliberately."
+    ask: true
+  - pattern: ".git/"
+    reason: "Do not delete .git/."
