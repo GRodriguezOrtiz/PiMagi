@@ -332,6 +332,12 @@ export default function (pi: ExtensionAPI) {
 							state.cost += (msg as AssistantMessage).usage?.cost?.total ?? 0;
 						}
 					}
+					// `percent` is null right after a compaction (token count unknown
+					// until the next LLM response — see pi CHANGELOG PR #1382), so
+					// keep the previous value in that case instead of zeroing the bar.
+					const pct = session.getContextUsage()?.percent;
+					if (pct != null) state.contextPct = pct;
+					updateWidget();
 				}
 			});
 
