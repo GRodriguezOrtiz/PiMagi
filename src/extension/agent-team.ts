@@ -46,14 +46,26 @@ interface AgentState {
 	lastWork: string;
 	contextPct: number;
 	cost: number;
+	lifetimeCost: number;
 	runCount: number;
 	timer?: ReturnType<typeof setInterval>;
+    inputTokens: number;
+    outputTokens: number;
+    filesRead: Set<string>;
+    filesWritten: Set<string>;
 }
 
 // ── Display helpers ──────────────────────────────────────────────────────────
 
 function displayName(name: string): string {
 	return name.split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+}
+
+function formatCount(n: number): string {
+    if (n < 1000) return String(n);
+
+    const value = n / 1000;
+    return `${value.toFixed(value < 10 ? 1 : 0)}K`;
 }
 
 // ── Agent file parser ────────────────────────────────────────────────────────
@@ -159,7 +171,12 @@ export default function (pi: ExtensionAPI) {
 				lastWork: "",
 				contextPct: 0,
 				cost: 0,
+				lifetimeCost: 0,
 				runCount: 0,
+                inputTokens: 0,
+                outputTokens: 0,
+                filesRead: new Set(),
+                filesWritten: new Set(),
 			});
 		}
 	}
@@ -179,36 +196,46 @@ export default function (pi: ExtensionAPI) {
 
 		const name = displayName(state.def.name);
 		const nameStr = theme.fg("accent", theme.bold(truncate(name, w)));
-		const nameVisible = Math.min(name.length, w);
 
 		const statusStr = `${statusIcon} ${state.status}`;
 		const timeStr = state.status !== "idle" ? ` ${Math.round(state.elapsed / 1000)}s` : "";
 		const statusLine = theme.fg(statusColor, statusStr + timeStr);
-		const statusVisible = statusStr.length + timeStr.length;
 
-		const filled = Math.ceil(state.contextPct / 20);
-		const bar = "#".repeat(filled) + "-".repeat(5 - filled);
-		const costStr = state.cost > 0 ? `  $${state.cost.toFixed(4)}` : "";
-		const ctxStr = `[${bar}] ${Math.ceil(state.contextPct)}%${costStr}`;
+		const costStr = state.cost > 0 ? `$${state.cost.toFixed(4)}` : "$0.00";
+        const tokStr = `tok ↑${formatCount(state.inputTokens)}/↓${formatCount(state.outputTokens)}`;
+        const costTokLine = theme.fg("dim",`cost ${costStr} · ${tokStr}`);
+
+        const toolStr = state.toolCount ? `tools ${state.toolCount}` : "tools 0";
+        const filesRead = state.filesRead.size;
+        const filesWritten = state.filesWritten.size;
+        const fileStr = `files ${filesRead}R/${filesWritten}W`;
+        const toolFileLine = theme.fg("dim", `${toolStr} · ${fileStr}`);
+
+		const ctxStr = `Last ctx ${Math.ceil(state.contextPct)}%`;
 		const ctxLine = theme.fg("dim", ctxStr);
-		const ctxVisible = ctxStr.length;
 
 		const workRaw = state.task ? (state.lastWork || state.task) : state.def.description;
 		const workText = truncate(workRaw, Math.min(50, w - 1));
 		const workLine = theme.fg("muted", workText);
-		const workVisible = workText.length;
 
 		const top = "┌" + "─".repeat(w) + "┐";
 		const bot = "└" + "─".repeat(w) + "┘";
-		const border = (content: string, visLen: number) =>
-			theme.fg("dim", "│") + content + " ".repeat(Math.max(0, w - visLen)) + theme.fg("dim", "│");
+        const border = (content: string) => {
+            const visLen = visibleWidth(content);
+            return theme.fg("dim", "│") +
+                content +
+                " ".repeat(Math.max(0, w - visLen)) +
+                theme.fg("dim", "│");
+        };
 
 		return [
 			theme.fg("dim", top),
-			border(" " + nameStr,   1 + nameVisible),
-			border(" " + statusLine, 1 + statusVisible),
-			border(" " + ctxLine,   1 + ctxVisible),
-			border(" " + workLine,  1 + workVisible),
+			border(" " + nameStr),
+			border(" " + statusLine),
+			border(" " + costTokLine),
+			border(" " + toolFileLine),
+			border(" " + ctxLine),
+			border(" " + workLine),
 			theme.fg("dim", bot),
 		];
 	}
@@ -231,7 +258,7 @@ export default function (pi: ExtensionAPI) {
 						const rowAgents = agents.slice(i, i + cols);
 						const cards = rowAgents.map(a => renderCard(a, colWidth, theme));
 
-						while (cards.length < cols) cards.push(Array(6).fill(" ".repeat(colWidth)));
+						while (cards.length < cols) cards.push(Array(8).fill(" ".repeat(colWidth)));
 
 						const cardHeight = cards[0].length;
 						for (let line = 0; line < cardHeight; line++) {
@@ -273,11 +300,17 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		state.status = "running";
+        state.cost = 0;
 		state.task = task;
 		state.toolCount = 0;
 		state.elapsed = 0;
 		state.lastWork = task;
 		state.runCount++;
+        state.inputTokens = 0;
+        state.outputTokens = 0;
+        state.contextPct = 0;
+        state.filesRead.clear();
+        state.filesWritten.clear();
 		updateWidget();
 
 		const startTime = Date.now();
@@ -324,12 +357,25 @@ export default function (pi: ExtensionAPI) {
 				}
 				if (event.type === "tool_execution_start") {
 					state.toolCount++;
-					updateWidget();
+
+                    if (["read", "grep", "find", "ls"].includes(event.toolName)) {
+                        state.filesRead.add(event.args.path);
+                    }
+
+                    if (["write", "edit"].includes(event.toolName)) {
+                        state.filesWritten.add(event.args.path);
+                    }
+
+                    updateWidget();
 				}
 				if (event.type === "agent_end") {
 					for (const msg of event.messages) {
 						if (msg.role === "assistant") {
-							state.cost += (msg as AssistantMessage).usage?.cost?.total ?? 0;
+							const messageCost = (msg as AssistantMessage).usage?.cost?.total ?? 0;
+							state.cost += messageCost;
+							state.lifetimeCost += messageCost;
+                            state.inputTokens += (msg as AssistantMessage).usage?.input ?? 0;
+                            state.outputTokens += (msg as AssistantMessage).usage?.output ?? 0;
 						}
 					}
 					// `percent` is null right after a compaction (token count unknown
@@ -514,7 +560,7 @@ export default function (pi: ExtensionAPI) {
 							}
 						}
 
-						const agentCost  = Array.from(agentStates.values()).reduce((s, a) => s + a.cost, 0);
+						const agentCost  = Array.from(agentStates.values()).reduce((s, a) => s + a.lifetimeCost, 0);
 						const totalCost  = orchCost + agentCost;
 						const fmt        = (n: number) => `$${n.toFixed(4)}`;
 
