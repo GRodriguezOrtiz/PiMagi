@@ -1,6 +1,9 @@
 /tmp
 /out-tsc
 
+# Private integrations (local overrides, not for the repo)
+docker/docker-compose.override.yml
+
 /node_modules
 npm-debug.log*
 yarn-debug.log*
