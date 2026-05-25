@@ -134,6 +134,7 @@ function toolsFromSpec(spec: string): string[] {
 
 export default function (pi: ExtensionAPI) {
 	const agentStates: Map<string, AgentState> = new Map();
+	const agentOverrides: Map<string, { model?: string; thinkingLevel?: string }> = new Map();
 	let orchestratorDef!: AgentDef;
 	const teamName = "MAGI";
 	const gridCols = 3;
@@ -362,18 +363,23 @@ export default function (pi: ExtensionAPI) {
 			});
 			await loader.reload();
 
-			// Resolve per-agent overrides from frontmatter (undefined = inherit from orchestrator)
+			const override = agentOverrides.get(key);
+
+			// model: runtime override → frontmatter → orchestrator (via ?? ctx.model below)
 			let effectiveModel: any = undefined;
-			if (state.def.model) {
-				const parts = state.def.model.split("/");
+			const modelStr = override?.model ?? state.def.model;
+			if (modelStr) {
+				const parts = modelStr.split("/");
 				const provider = parts.length > 1 ? parts[0] : undefined;
 				const id = parts.length > 1 ? parts.slice(1).join("/") : parts[0];
 				effectiveModel = ctx.modelRegistry?.find?.(provider, id) ?? undefined;
-				if (state.def.model && !effectiveModel) {
-					console.warn(`[agent-team] Model "${state.def.model}" not found in registry for agent "${state.def.name}", falling back to orchestrator model`);
+				if (!effectiveModel) {
+					console.warn(`[agent-team] Model "${modelStr}" not found in registry for agent "${state.def.name}", falling back to orchestrator model`);
 				}
 			}
-			const effectiveThinking: any = state.def.thinkingLevel ?? undefined;
+
+			// thinkingLevel: runtime override → frontmatter → orchestrator (via ?? storedOrchestratorThinkingLevel below)
+			const effectiveThinking: any = override?.thinkingLevel ?? state.def.thinkingLevel ?? undefined;
 
 			const { session } = await createAgentSession({
 				sessionManager: SessionManager.inMemory(),
@@ -546,6 +552,148 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			return new Text(header, 0, 0);
+		},
+	});
+
+	// ── /agent slash command ─────────────────────────────────────────────────
+
+	pi.registerCommand("agent", {
+		description: "View or override per-agent model and thinking level",
+		handler: async (args, ctx) => {
+			if (!ctx.hasUI) return;
+			const argv = args.trim().split(/\s+/).filter(Boolean);
+			const sub = argv[0];
+
+			// /agent list
+			if (!sub || sub === "list") {
+				const lines = Array.from(agentStates.entries()).map(([key, state]) => {
+					const ov = agentOverrides.get(key);
+					const model = ov?.model ?? state.def.model ?? "(inherit)";
+					const thinking = ov?.thinkingLevel ?? state.def.thinkingLevel ?? "(inherit)";
+					const tag = ov ? " [override]" : state.def.model ? " [frontmatter]" : "";
+					return `${displayName(state.def.name)}: ${model} · ${thinking}${tag}`;
+				});
+				ctx.ui.notify(lines.join("\n"), "info");
+				return;
+			}
+
+			// /agent show <name>
+			if (sub === "show") {
+				const name = argv[1]?.toLowerCase();
+				if (!name) { ctx.ui.notify("Usage: /agent show <name>", "warning"); return; }
+				const state = agentStates.get(name);
+				if (!state) { ctx.ui.notify(`Unknown agent: ${argv[1]}`, "error"); return; }
+				const ov = agentOverrides.get(name);
+				const lines = [
+					`Agent:     ${displayName(state.def.name)}`,
+					`Status:    ${state.status}`,
+					`Model:     ${ov?.model ?? state.def.model ?? "(inherit from orchestrator)"}${ov?.model ? " [override]" : state.def.model ? " [frontmatter]" : ""}`,
+					`Thinking:  ${ov?.thinkingLevel ?? state.def.thinkingLevel ?? "(inherit from orchestrator)"}${ov?.thinkingLevel ? " [override]" : state.def.thinkingLevel ? " [frontmatter]" : ""}`,
+				];
+				ctx.ui.notify(lines.join("\n"), "info");
+				return;
+			}
+
+			// /agent model <name> <provider/id>
+			if (sub === "model") {
+				const name = argv[1]?.toLowerCase();
+				const model = argv[2];
+				if (!name || !model) { ctx.ui.notify("Usage: /agent model <name> <provider/id>", "warning"); return; }
+				const state = agentStates.get(name);
+				if (!state) { ctx.ui.notify(`Unknown agent: ${argv[1]}`, "error"); return; }
+				if (state.status === "running") { ctx.ui.notify(`Cannot override "${displayName(state.def.name)}" while it is running`, "error"); return; }
+				agentOverrides.set(name, { ...agentOverrides.get(name), model });
+				ctx.ui.notify(`${displayName(state.def.name)} model → ${model}`, "info");
+				updateWidget();
+				return;
+			}
+
+			// /agent thinking <name> <level>
+			if (sub === "thinking") {
+				const name = argv[1]?.toLowerCase();
+				const level = argv[2]?.toLowerCase();
+				if (!name || !level) { ctx.ui.notify("Usage: /agent thinking <name> <level>", "warning"); return; }
+				const state = agentStates.get(name);
+				if (!state) { ctx.ui.notify(`Unknown agent: ${argv[1]}`, "error"); return; }
+				if (state.status === "running") { ctx.ui.notify(`Cannot override "${displayName(state.def.name)}" while it is running`, "error"); return; }
+				if (!VALID_THINKING_LEVELS.has(level)) {
+					ctx.ui.notify(`Invalid thinking level "${level}". Valid: ${[...VALID_THINKING_LEVELS].join(", ")}`, "error");
+					return;
+				}
+				agentOverrides.set(name, { ...agentOverrides.get(name), thinkingLevel: level });
+				ctx.ui.notify(`${displayName(state.def.name)} thinking → ${level}`, "info");
+				updateWidget();
+				return;
+			}
+
+			// /agent reset <name | all>
+			if (sub === "reset") {
+				const target = argv[1]?.toLowerCase();
+				if (!target) { ctx.ui.notify("Usage: /agent reset <name | all>", "warning"); return; }
+				if (target === "all") {
+					agentOverrides.clear();
+					ctx.ui.notify("All agent overrides cleared", "info");
+					updateWidget();
+					return;
+				}
+				const state = agentStates.get(target);
+				if (!state) { ctx.ui.notify(`Unknown agent: ${argv[1]}`, "error"); return; }
+				if (state.status === "running") { ctx.ui.notify(`Cannot reset "${displayName(state.def.name)}" while it is running`, "error"); return; }
+				agentOverrides.delete(target);
+				ctx.ui.notify(`${displayName(state.def.name)} overrides cleared`, "info");
+				updateWidget();
+				return;
+			}
+
+			ctx.ui.notify(`Unknown subcommand: ${sub}\nUsage: /agent list | show <name> | model <name> <id> | thinking <name> <level> | reset <name|all>`, "warning");
+		},
+
+		getArgumentCompletions: (prefix) => {
+			// pi replaces the *whole* argument prefix with item.value, so values
+			// below include the already-entered command chain, not only the token.
+			const trimmed = prefix.trim();
+			const argv = trimmed ? trimmed.split(/\s+/) : [];
+			if (/\s$/.test(prefix)) argv.push("");
+
+			const startsWith = (value: string, query: string | undefined) =>
+				value.toLowerCase().startsWith((query ?? "").toLowerCase());
+
+			// first token — subcommand
+			if (argv.length <= 1) {
+				const subcommands = ["list", "show", "model", "thinking", "reset"];
+				return subcommands
+					.filter(s => startsWith(s, argv[0]))
+					.map(s => ({
+						value: ["show", "model", "thinking", "reset"].includes(s) ? `${s} ` : s,
+						label: s,
+					}));
+			}
+
+			const sub = argv[0]?.toLowerCase();
+			const agentNames = Array.from(agentStates.keys());
+
+			// second token — agent name (for show, model, thinking, reset)
+			if (argv.length === 2 && ["show", "model", "thinking", "reset"].includes(sub)) {
+				const candidates = sub === "reset"
+					? [...agentNames, "all"]
+					: agentNames;
+				const suffix = ["model", "thinking"].includes(sub) ? " " : "";
+				return candidates
+					.filter(n => startsWith(n, argv[1]))
+					.map(n => ({
+						value: `${sub} ${n}${suffix}`,
+						label: n === "all" ? "all" : displayName(agentStates.get(n)?.def.name ?? n),
+					}));
+			}
+
+			// third token — thinking level
+			if (argv.length === 3 && sub === "thinking" && argv[1]) {
+				return [...VALID_THINKING_LEVELS]
+					.filter(l => startsWith(l, argv[2]))
+					.map(l => ({ value: `${sub} ${argv[1]} ${l}`, label: l }));
+			}
+
+			return null;
 		},
 	});
 
