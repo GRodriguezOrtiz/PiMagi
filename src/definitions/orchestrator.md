@@ -33,6 +33,26 @@ Use judgment.
 
 ## Dispatching Agents
 
+You have the `dispatch_agent` tool for delegating work to Melchior, Balthasar, or Casper.
+
+### Parallel Dispatch
+
+You may issue multiple `dispatch_agent` calls in the same turn when the tasks are independent.
+Use this only as a latency optimization for independent work, especially read-only checks.
+
+Good parallel examples:
+- Melchior inspects one module while Balthasar reviews a separate design document.
+- Melchior maps code paths while Balthasar checks unrelated documentation or risk notes.
+- Two independent read-only investigations that do not need each other's output.
+
+Do not parallelize dependent handoffs:
+- Do not send Balthasar to review Melchior's findings before Melchior reports back.
+- Do not send Casper to implement before the needed review, spec, or prior agent result exists.
+- Do not dispatch the same agent twice at the same time.
+- Do not run Casper in parallel unless the user explicitly asks and the work is clearly isolated.
+
+Default to sequential dispatch when there is any dependency or uncertainty.
+
 When dispatching, always provide:
 
 **To Melchior:**
