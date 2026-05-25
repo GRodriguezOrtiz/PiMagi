@@ -19,6 +19,7 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	getAgentDir,
+	keyHint,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -532,11 +533,15 @@ export default function (pi: ExtensionAPI) {
 				return new Text(text?.type === "text" ? text.text : "", 0, 0);
 			}
 
-			if (options.isPartial || details.status === "dispatching") {
-				return new Text(
-					theme.fg("accent", `● ${details.agent || "?"}`) + theme.fg("dim", " working..."),
-					0, 0,
-				);
+			const textContent = result.content.find((c: any) => c.type === "text") as { type: "text"; text: string } | undefined;
+			const fullOutput = typeof details.fullOutput === "string" ? details.fullOutput : (textContent?.text ?? "");
+
+			if (options.isPartial || details.status === "dispatching" || details.status === "running") {
+				const header = theme.fg("accent", `● ${details.agent || "?"}`) + theme.fg("dim", " working...");
+				if (options.expanded && fullOutput) {
+					return new Text(header + "\n" + theme.fg("muted", fullOutput), 0, 0);
+				}
+				return new Text(header, 0, 0);
 			}
 
 			const icon    = details.status === "done" ? "✓" : "✗";
@@ -544,14 +549,13 @@ export default function (pi: ExtensionAPI) {
 			const elapsed = typeof details.elapsed === "number" ? Math.round(details.elapsed / 1000) : 0;
 			const header  = theme.fg(color, `${icon} ${details.agent}`) + theme.fg("dim", ` ${elapsed}s`);
 
-			if (options.expanded && details.fullOutput) {
-				const output = details.fullOutput.length > 4000
-					? details.fullOutput.slice(0, 4000) + "\n... [truncated]"
-					: details.fullOutput;
+			if (options.expanded) {
+				const output = fullOutput || "(no output)";
 				return new Text(header + "\n" + theme.fg("muted", output), 0, 0);
 			}
 
-			return new Text(header, 0, 0);
+			const hint = fullOutput ? theme.fg("dim", ` ${keyHint("app.tools.expand", "to expand")}`) : "";
+			return new Text(header + hint, 0, 0);
 		},
 	});
 
