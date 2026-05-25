@@ -35,6 +35,8 @@ interface AgentDef {
 	tools: string;
 	extensionPaths: string[];
 	systemPrompt: string;
+	model?: string;          // e.g. "anthropic/claude-haiku-4-5", undefined = inherit
+	thinkingLevel?: string;  // e.g. "low", "high", undefined = inherit
 }
 
 interface AgentState {
@@ -72,6 +74,8 @@ function formatCount(n: number): string {
 
 // ── Agent file parser ────────────────────────────────────────────────────────
 
+const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
+
 function parseAgentFile(filePath: string): AgentDef  {
     const raw = readFileSync(filePath, "utf-8");
     const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
@@ -92,12 +96,23 @@ function parseAgentFile(filePath: string): AgentDef  {
         .filter(Boolean)
         .map(p => resolve(baseDir, p));
 
+    const rawThinking = fm.thinking?.toLowerCase();
+    const thinkingLevel = rawThinking && VALID_THINKING_LEVELS.has(rawThinking)
+        ? rawThinking
+        : rawThinking
+            ? (console.warn(`[agent-team] Unknown thinking level "${fm.thinking}" in ${filePath}, ignoring`), undefined)
+            : undefined;
+
+    const model = fm.model?.trim() || undefined;
+
     return {
         name: fm.name,
         description: fm.description || "",
         tools: fm.tools || "read,grep,find,ls",
         extensionPaths,
         systemPrompt: match[2].trim(),
+        model,
+        thinkingLevel,
     };
 }
 
@@ -347,9 +362,18 @@ export default function (pi: ExtensionAPI) {
 			});
 			await loader.reload();
 
-			// Future: resolved from per-agent override map and/or frontmatter
-			const effectiveModel: any = undefined;
-			const effectiveThinking: any = undefined;
+			// Resolve per-agent overrides from frontmatter (undefined = inherit from orchestrator)
+			let effectiveModel: any = undefined;
+			if (state.def.model) {
+				const parts = state.def.model.split("/");
+				const provider = parts.length > 1 ? parts[0] : undefined;
+				const id = parts.length > 1 ? parts.slice(1).join("/") : parts[0];
+				effectiveModel = ctx.modelRegistry?.find?.(provider, id) ?? undefined;
+				if (state.def.model && !effectiveModel) {
+					console.warn(`[agent-team] Model "${state.def.model}" not found in registry for agent "${state.def.name}", falling back to orchestrator model`);
+				}
+			}
+			const effectiveThinking: any = state.def.thinkingLevel ?? undefined;
 
 			const { session } = await createAgentSession({
 				sessionManager: SessionManager.inMemory(),
