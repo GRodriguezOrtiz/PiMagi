@@ -53,6 +53,8 @@ interface AgentState {
     outputTokens: number;
     filesRead: Set<string>;
     filesWritten: Set<string>;
+    model: string | undefined;
+    thinkingLevel: string | undefined;
 }
 
 // ── Display helpers ──────────────────────────────────────────────────────────
@@ -117,10 +119,11 @@ function toolsFromSpec(spec: string): string[] {
 
 export default function (pi: ExtensionAPI) {
 	const agentStates: Map<string, AgentState> = new Map();
-	let orchestratorDef: AgentDef;
+	let orchestratorDef!: AgentDef;
 	const teamName = "MAGI";
 	const gridCols = 3;
 	let widgetCtx: any;
+    let storedOrchestratorThinkingLevel: string | undefined = undefined;
 
 	// ── Load agents ────────────────────────────────────────────────────────
 
@@ -177,6 +180,8 @@ export default function (pi: ExtensionAPI) {
                 outputTokens: 0,
                 filesRead: new Set(),
                 filesWritten: new Set(),
+                model: undefined,
+                thinkingLevel: undefined,
 			});
 		}
 	}
@@ -211,6 +216,9 @@ export default function (pi: ExtensionAPI) {
         const fileStr = `files ${filesRead}R/${filesWritten}W`;
         const toolFileLine = theme.fg("dim", `${toolStr} · ${fileStr}`);
 
+        const modelStr = state.model ? `${state.model} · ${state.thinkingLevel}` : "";
+        const modelLine = theme.fg("dim", modelStr);
+
 		const ctxStr = `Last ctx ${Math.ceil(state.contextPct)}%`;
 		const ctxLine = theme.fg("dim", ctxStr);
 
@@ -235,6 +243,7 @@ export default function (pi: ExtensionAPI) {
 			border(" " + costTokLine),
 			border(" " + toolFileLine),
 			border(" " + ctxLine),
+			...(modelStr ? [border(" " + modelLine)] : []),
 			border(" " + workLine),
 			theme.fg("dim", bot),
 		];
@@ -258,9 +267,9 @@ export default function (pi: ExtensionAPI) {
 						const rowAgents = agents.slice(i, i + cols);
 						const cards = rowAgents.map(a => renderCard(a, colWidth, theme));
 
-						while (cards.length < cols) cards.push(Array(8).fill(" ".repeat(colWidth)));
+						while (cards.length < cols) cards.push(Array(9).fill(" ".repeat(colWidth)));
 
-						const cardHeight = cards[0].length;
+						const cardHeight = Math.max(...cards.map(c => c.length));
 						for (let line = 0; line < cardHeight; line++) {
 							rows.push(cards.map(card => card[line] || ""));
 						}
@@ -338,11 +347,22 @@ export default function (pi: ExtensionAPI) {
 			});
 			await loader.reload();
 
+			// Future: resolved from per-agent override map and/or frontmatter
+			const effectiveModel: any = undefined;
+			const effectiveThinking: any = undefined;
+
 			const { session } = await createAgentSession({
 				sessionManager: SessionManager.inMemory(),
 				tools: toolsFromSpec(state.def.tools),
 				resourceLoader: loader,
+                model: effectiveModel ?? ctx.model,
+                thinkingLevel: effectiveThinking ?? storedOrchestratorThinkingLevel,
 			});
+
+            const m = session.model;
+            state.model = m ? m.id : undefined;
+            state.thinkingLevel = session.thinkingLevel ?? undefined;
+            updateWidget();
 
 			let output = "";
 
@@ -358,11 +378,11 @@ export default function (pi: ExtensionAPI) {
 				if (event.type === "tool_execution_start") {
 					state.toolCount++;
 
-                    if (["read", "grep", "find", "ls"].includes(event.toolName)) {
+                    if (["read", "grep", "find", "ls"].includes(event.toolName) && event.args?.path) {
                         state.filesRead.add(event.args.path);
                     }
 
-                    if (["write", "edit"].includes(event.toolName)) {
+                    if (["write", "edit"].includes(event.toolName) && event.args?.path) {
                         state.filesWritten.add(event.args.path);
                     }
 
@@ -507,6 +527,10 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Orchestrator system prompt ─────────────────────────────────────────
 
+	pi.on("thinking_level_select", async (event, _ctx) => {
+		storedOrchestratorThinkingLevel = event.level;
+	});
+
 	pi.on("before_agent_start", async (_event, _ctx) => {
     	return {systemPrompt: orchestratorDef.systemPrompt};
 	});
@@ -524,6 +548,9 @@ export default function (pi: ExtensionAPI) {
 
         orchestratorDef = parseAgentFile(join(__dirname, "..", "definitions", "orchestrator.md"));
 		activateTeam(loadAgents(ctx.cwd));
+		if ((ctx as any).thinkingLevel) {
+			storedOrchestratorThinkingLevel = (ctx as any).thinkingLevel;
+		}
 
 		pi.setActiveTools(["dispatch_agent"]);
 
