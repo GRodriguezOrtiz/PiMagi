@@ -1,15 +1,15 @@
 {
   "name": "PiMagi",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.75.5",
-    "@earendil-works/pi-coding-agent": "0.75.5",
-    "@earendil-works/pi-tui": "^0.75.5"
+    "@earendil-works/pi-ai": "^0.76.0",
+    "@earendil-works/pi-coding-agent": "0.76.0",
+    "@earendil-works/pi-tui": "^0.76.0"
   },
   "devDependencies": {
     "typescript": "^5.5.3"

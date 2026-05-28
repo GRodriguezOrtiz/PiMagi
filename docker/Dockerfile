@@ -10,7 +10,7 @@ RUN apk add --no-cache \
         tmux
 
 # Install pi globally
-RUN npm install -g "@earendil-works/pi-coding-agent@0.75.5"
+RUN npm install -g "@earendil-works/pi-coding-agent@0.76.0"
 
 # Install yaml where jiti's module resolution can reach it.
 # /home/piuser/.pi/node_modules/ sits in the ancestor-walk chain of every
