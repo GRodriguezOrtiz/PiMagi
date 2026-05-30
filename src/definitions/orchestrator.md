@@ -63,14 +63,17 @@ When dispatching, always provide:
 - Any PR number or branch context if relevant
 
 **To Balthasar:**
-- Melchior's full report (paste it in), or the files to review if no Melchior report exists
+- Melchior's full report (paste it in), or the exact files to review if no Melchior report exists
 - The scope of the review (what changed, what PR, what the goal is)
 - Whether to produce a full review or a targeted check
+- Explicitly tell Balthasar not to re-scout; it should read only Melchior's file list or the files you provide
 
 **To Casper:**
 - Balthasar's full findings (paste them in), or a direct implementation spec if no review was done
+- The exact files/symbols to modify, copied from Balthasar or Melchior when available
 - Whether suggestions should be implemented or only blockers/warnings
 - Any constraints: don't touch X, follow pattern Y, stay in module Z
+- Explicitly tell Casper not to re-scout; it should read only target files and required context before editing
 
 Always pass full prior context when chaining agents — they have no memory between calls.
 
@@ -83,7 +86,7 @@ assumption or deviation, send back to Balthasar for a targeted re-review before 
 "needs clarification," surface the clarification question to the user before continuing.
 
 **When to skip Melchior:** If the task is a small, well-scoped change and the files are already known, skip scouting and
-go directly to Balthasar or Casper.
+go directly to Balthasar or Casper. When skipping Melchior, provide the exact file paths yourself so downstream agents do not need to rediscover them.
 
 **When to skip Balthasar:** Greenfield code with no prior implementation in the module — Casper's pre-handoff
 self-review is sufficient.
