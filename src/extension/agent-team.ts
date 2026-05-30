@@ -61,6 +61,13 @@ interface AgentState {
 }
 
 // ── Display helpers ──────────────────────────────────────────────────────────
+function sanitizeStatusText(text: string) {
+    // Replace newlines, tabs, carriage returns with space, then collapse multiple spaces
+    return text
+        .replace(/[\r\n\t]/g, " ")
+        .replace(/ +/g, " ")
+        .trim();
+}
 
 function displayName(name: string): string {
 	return name.split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
@@ -730,7 +737,7 @@ export default function (pi: ExtensionAPI) {
 
 		pi.setActiveTools(["dispatch_agent"]);
 
-		ctx.ui.setStatus("agent-team", `Team: ${teamName} (${agentStates.size})`);
+		ctx.ui.setStatus("agent-team", `👥 MAGI TEAM ONLINE`);
 		ctx.ui.notify(
 			`MAGI system online` +
 			`Members: ${Array.from(agentStates.values()).map(s => displayName(s.def.name)).join(", ")}\n\n`
@@ -771,8 +778,18 @@ export default function (pi: ExtensionAPI) {
 						const l2Right = theme.fg("dim", "total ") + theme.fg("warning", `${fmt(totalCost)} `);
 						const pad2    = " ".repeat(Math.max(1, width - visibleWidth(l2Left) - visibleWidth(l2Right)));
 						const line2   = truncateToWidth(l2Left + pad2 + l2Right, width);
+                        let lines: string[] = [line1, line2]
+                        const extensionStatuses = footerData.getExtensionStatuses();
+                        if (extensionStatuses.size > 0) {
+                            const sortedStatuses = Array.from(extensionStatuses.entries())
+                                .sort(([a], [b]) => a.localeCompare(b))
+                                .map(([, text]) => sanitizeStatusText(text));
+                            const statusLine =  " " + sortedStatuses.join(" · ");
+                            // Truncate to terminal width with dim ellipsis for consistency with footer style
+                            lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));
+                        }
 
-						return [line1, line2];
+						return lines;
 					},
 				};
 			});
