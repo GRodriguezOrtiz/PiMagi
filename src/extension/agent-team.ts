@@ -26,7 +26,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -49,11 +49,17 @@ interface AgentState {
 	lastWork: string;
 	contextPct: number;
 	cost: number;
-	lifetimeCost: number;
+	sessionCost: number;
 	runCount: number;
 	timer?: ReturnType<typeof setInterval>;
     inputTokens: number;
     outputTokens: number;
+    sessionInputTokens: number;
+    sessionOutputTokens: number;
+    cacheReads: number;
+    cacheWrites: number;
+    sessionCacheReads: number;
+    sessionCacheWrites: number;
     filesRead: Set<string>;
     filesWritten: Set<string>;
     model: string | undefined;
@@ -69,15 +75,40 @@ function sanitizeStatusText(text: string) {
         .trim();
 }
 
+function getProjectName(cwd: string): string {
+    const explicit = process.env.MAGI_PROJECT_NAME?.trim();
+    if (explicit) return explicit;
+
+    const hostPwd = process.env.MAGI_HOST_PWD?.trim();
+    if (hostPwd) return basename(hostPwd) || hostPwd;
+
+    const packageJson = join(cwd, "package.json");
+    if (existsSync(packageJson)) {
+        try {
+            const pkg = JSON.parse(readFileSync(packageJson, "utf8"));
+            if (typeof pkg.name === "string" && pkg.name.trim()) {
+                return pkg.name.trim();
+            }
+        } catch {}
+    }
+
+    return basename(cwd) || cwd;
+}
+
 function displayName(name: string): string {
 	return name.split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 }
 
-function formatCount(n: number): string {
-    if (n < 1000) return String(n);
-
-    const value = n / 1000;
-    return `${value.toFixed(value < 10 ? 1 : 0)}K`;
+function formatCount(count: number): string {
+    if (count < 1000)
+        return count.toString();
+    if (count < 10000)
+        return `${(count / 1000).toFixed(1)}k`;
+    if (count < 1000000)
+        return `${Math.round(count / 1000)}k`;
+    if (count < 10000000)
+        return `${(count / 1000000).toFixed(1)}M`;
+    return `${Math.round(count / 1000000)}M`;
 }
 
 // ── Agent file parser ────────────────────────────────────────────────────────
@@ -144,7 +175,6 @@ export default function (pi: ExtensionAPI) {
 	const agentStates: Map<string, AgentState> = new Map();
 	const agentOverrides: Map<string, { model?: string; thinkingLevel?: string }> = new Map();
 	let orchestratorDef!: AgentDef;
-	const teamName = "MAGI";
 	const gridCols = 3;
 	let widgetCtx: any;
     let storedOrchestratorThinkingLevel: string | undefined = undefined;
@@ -198,10 +228,16 @@ export default function (pi: ExtensionAPI) {
 				lastWork: "",
 				contextPct: 0,
 				cost: 0,
-				lifetimeCost: 0,
+				sessionCost: 0,
 				runCount: 0,
                 inputTokens: 0,
                 outputTokens: 0,
+                sessionInputTokens: 0,
+                sessionOutputTokens: 0,
+                cacheReads: 0,
+                cacheWrites: 0,
+                sessionCacheReads: 0,
+                sessionCacheWrites: 0,
                 filesRead: new Set(),
                 filesWritten: new Set(),
                 model: undefined,
@@ -341,6 +377,8 @@ export default function (pi: ExtensionAPI) {
 		state.runCount++;
         state.inputTokens = 0;
         state.outputTokens = 0;
+        state.cacheReads = 0;
+        state.cacheWrites = 0;
         state.contextPct = 0;
         state.filesRead.clear();
         state.filesWritten.clear();
@@ -430,10 +468,20 @@ export default function (pi: ExtensionAPI) {
 					for (const msg of event.messages) {
 						if (msg.role === "assistant") {
 							const messageCost = (msg as AssistantMessage).usage?.cost?.total ?? 0;
+                            const inputTokens = (msg as AssistantMessage).usage?.input ?? 0;
+                            const outputTokens = (msg as AssistantMessage).usage?.output ?? 0;
+                            const cacheReads = (msg as AssistantMessage).usage?.cacheRead ?? 0;
+                            const cacheWrites = (msg as AssistantMessage).usage?.cacheWrite ?? 0;
 							state.cost += messageCost;
-							state.lifetimeCost += messageCost;
-                            state.inputTokens += (msg as AssistantMessage).usage?.input ?? 0;
-                            state.outputTokens += (msg as AssistantMessage).usage?.output ?? 0;
+							state.sessionCost += messageCost;
+                            state.inputTokens += inputTokens;
+                            state.outputTokens += outputTokens;
+                            state.sessionInputTokens += inputTokens;
+                            state.sessionOutputTokens += outputTokens;
+                            state.cacheReads += cacheReads;
+                            state.cacheWrites += cacheWrites;
+                            state.sessionCacheReads += cacheReads;
+                            state.sessionCacheWrites += cacheWrites;
 						}
 					}
 					// `percent` is null right after a compaction (token count unknown
@@ -442,7 +490,7 @@ export default function (pi: ExtensionAPI) {
 					const pct = session.getContextUsage()?.percent;
 					if (pct != null) state.contextPct = pct;
 					updateWidget();
-				}
+                }
 			});
 
 			signal?.addEventListener("abort", () => { session.abort(); });
@@ -455,6 +503,25 @@ export default function (pi: ExtensionAPI) {
 			state.status = "done";
 			state.lastWork = output.split("\n").filter(l => l.trim()).pop() || task;
 			updateWidget();
+
+            pi.appendEntry("agent-team-run", {
+                version: 1,
+                agent: state.def.name,
+                task,
+                status: state.status,
+                elapsed: state.elapsed,
+                model: state.model,
+                thinkingLevel: state.thinkingLevel,
+                cost: state.cost,
+                inputTokens: state.inputTokens,
+                outputTokens: state.outputTokens,
+                cacheReads: state.cacheReads,
+                cacheWrites: state.cacheWrites,
+                toolCount: state.toolCount,
+                filesRead: [...state.filesRead],
+                filesWritten: [...state.filesWritten],
+                timestamp: Date.now(),
+            });
 
 			ctx.ui.notify(
 				`${displayName(state.def.name)} done in ${Math.round(state.elapsed / 1000)}s`,
@@ -469,6 +536,25 @@ export default function (pi: ExtensionAPI) {
 			state.status = "error";
 			state.lastWork = err?.message || "error";
 			updateWidget();
+
+            pi.appendEntry("agent-team-run", {
+                version: 1,
+                agent: state.def.name,
+                task,
+                status: state.status,
+                elapsed: state.elapsed,
+                model: state.model,
+                thinkingLevel: state.thinkingLevel,
+                cost: state.cost,
+                inputTokens: state.inputTokens,
+                outputTokens: state.outputTokens,
+                cacheReads: state.cacheReads,
+                cacheWrites: state.cacheWrites,
+                toolCount: state.toolCount,
+                filesRead: [...state.filesRead],
+                filesWritten: [...state.filesWritten],
+                timestamp: Date.now(),
+            });
 
 			ctx.ui.notify(
 				`${displayName(state.def.name)} error in ${Math.round(state.elapsed / 1000)}s`,
@@ -731,7 +817,34 @@ export default function (pi: ExtensionAPI) {
 
         orchestratorDef = parseAgentFile(join(__dirname, "..", "definitions", "orchestrator.md"));
 		activateTeam(loadAgents(ctx.cwd));
-		if ((ctx as any).thinkingLevel) {
+
+        for (const entry of ctx.sessionManager.getEntries()) {
+            if (entry.type !== "custom") continue;
+            if (entry.customType !== "agent-team-run") continue;
+
+            const data = entry.data as {
+                agent?: string;
+                cost?: number;
+                inputTokens?: number;
+                outputTokens?: number;
+                cacheReads?: number;
+                cacheWrites?: number;
+            };
+
+            if (!data.agent) continue;
+
+            const key = data.agent.toLowerCase();
+            const agentState = agentStates.get(key);
+            if (!agentState) continue;
+
+            agentState.sessionCost += data.cost ?? 0;
+            agentState.sessionCacheReads += data.cacheReads ?? 0;
+            agentState.sessionCacheWrites += data.cacheWrites ?? 0;
+            agentState.sessionInputTokens += data.inputTokens ?? 0;
+            agentState.sessionOutputTokens += data.outputTokens ?? 0;
+        }
+
+        if ((ctx as any).thinkingLevel) {
 			storedOrchestratorThinkingLevel = (ctx as any).thinkingLevel;
 		}
 
@@ -755,11 +868,20 @@ export default function (pi: ExtensionAPI) {
 						const model = ctx.model?.id || "no-model";
 						const usage = ctx.getContextUsage();
 						const pct   = usage?.percent ?? 0;
-						const filled = Math.round(pct / 10);
+                        const contextColor =
+                            pct > 90 ? "error" :
+                            pct > 70 ? "warning" :
+                            "dim";
+                        const filled = Math.round(pct / 10);
 						const bar = "#".repeat(filled) + "-".repeat(10 - filled);
 
-						const l1Left  = theme.fg("dim", ` ${model}`) + theme.fg("muted", " · ") + theme.fg("accent", teamName);
-						const l1Right = theme.fg("dim", `[${bar}] ${Math.round(pct)}% `);
+						const projectName = getProjectName(ctx.cwd);
+						const branch = footerData.getGitBranch();
+						const sessionName = ctx.sessionManager.getSessionName();
+						const projectLabel = `${projectName}${branch ? ` (${branch})` : ""}${sessionName ? ` • ${sessionName}` : ""}`;
+
+						const l1Left  = theme.fg("dim", ` ${projectLabel}`) + theme.fg("muted", " • ") + theme.fg("dim", model) + theme.fg("muted", " • ") + theme.fg("accent", `${pi.getThinkingLevel()}`);
+						const l1Right = theme.fg(contextColor, `[${bar}] ${Math.round(pct)}% / ${formatCount(usage?.contextWindow ?? 0)}`);
 						const pad1    = " ".repeat(Math.max(1, width - visibleWidth(l1Left) - visibleWidth(l1Right)));
 						const line1   = truncateToWidth(l1Left + pad1 + l1Right, width);
 
@@ -770,12 +892,35 @@ export default function (pi: ExtensionAPI) {
 							}
 						}
 
-						const agentCost  = Array.from(agentStates.values()).reduce((s, a) => s + a.lifetimeCost, 0);
-						const totalCost  = orchCost + agentCost;
-						const fmt        = (n: number) => `$${n.toFixed(4)}`;
+                        let orchCostCacheRead = 0;
+                        let orchCostCacheWrite = 0;
+                        let orchInputTokens = 0;
+                        let orchOutputTokens = 0;
+                        for (const entry of ctx.sessionManager.getBranch()) {
+                            if (entry.type === "message" && entry.message.role === "assistant") {
+                                const assistantMessage = entry.message as AssistantMessage;
+                                orchCostCacheRead += assistantMessage.usage?.cacheRead ?? 0;
+                                orchCostCacheWrite += assistantMessage.usage?.cacheWrite ?? 0;
+                                orchInputTokens += assistantMessage.usage?.input ?? 0;
+                                orchOutputTokens += assistantMessage.usage?.output ?? 0;
+                            }
+                        }
 
-						const l2Left  = theme.fg("dim", " orch ") + theme.fg("success", fmt(orchCost)) + theme.fg("dim", "  agents ") + theme.fg("accent", fmt(agentCost));
-						const l2Right = theme.fg("dim", "total ") + theme.fg("warning", `${fmt(totalCost)} `);
+						const agentCost  = Array.from(agentStates.values()).reduce((s, a) => s + a.sessionCost, 0);
+						const totalCost  = orchCost + agentCost;
+						const agentInput = Array.from(agentStates.values()).reduce((s, a) => s + a.sessionInputTokens, 0);
+                        const agentOutput = Array.from(agentStates.values()).reduce((s, a) => s + a.sessionOutputTokens, 0);
+                        const totalInput = orchInputTokens + agentInput;
+                        const totalOutput = orchOutputTokens + agentOutput;
+                        const agentCacheReads = Array.from(agentStates.values()).reduce((s, a) => s + a.sessionCacheReads, 0);
+                        const agentCacheWrites = Array.from(agentStates.values()).reduce((s, a) => s + a.sessionCacheWrites, 0);
+                        const totalCacheReads = orchCostCacheRead + agentCacheReads;
+                        const totalCacheWrites = orchCostCacheWrite + agentCacheWrites;
+
+                        const fmt        = (n: number) => `$${n.toFixed(4)}`;
+
+						const l2Left  = theme.fg("dim", " orch ") + theme.fg("success", fmt(orchCost)) + theme.fg("dim", "  agents ") + theme.fg("accent", fmt(agentCost)) + theme.fg("dim", " total ") + theme.fg("warning", `${fmt(totalCost)}`);
+						const l2Right = theme.fg("dim", ` tok ↑${formatCount(totalInput)} ↓${formatCount(totalOutput)} • cache R${formatCount(totalCacheReads)} W${formatCount(totalCacheWrites)}`);
 						const pad2    = " ".repeat(Math.max(1, width - visibleWidth(l2Left) - visibleWidth(l2Right)));
 						const line2   = truncateToWidth(l2Left + pad2 + l2Right, width);
                         let lines: string[] = [line1, line2]
