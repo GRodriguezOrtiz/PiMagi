@@ -46,7 +46,7 @@ interface AgentState {
 	task: string;
 	toolCount: number;
 	elapsed: number;
-	lastWork: string;
+	lastToolCall: string;
 	contextPct: number;
 	cost: number;
 	sessionCost: number;
@@ -109,6 +109,30 @@ function formatCount(count: number): string {
     if (count < 10000000)
         return `${(count / 1000000).toFixed(1)}M`;
     return `${Math.round(count / 1000000)}M`;
+}
+
+function compactActivity(text: string, max = 80): string {
+    const compact = text.replace(/\s+/g, " ").trim();
+    return compact.length > max ? compact.slice(0, max - 3) + "..." : compact;
+}
+
+function argPart(label: string, value: unknown): string {
+    if (value === undefined || value === null || value === "") return "";
+    return `${label}=${JSON.stringify(String(value))}`;
+}
+
+function describeToolCall(toolName: string, args: any): string {
+    const parts = (...items: string[]) => items.filter(Boolean).join(" ");
+
+    if (toolName === "read") return compactActivity(parts("read", args?.path));
+    if (toolName === "grep") return compactActivity(parts("grep", argPart("pattern", args?.pattern), argPart("path", args?.path)));
+    if (toolName === "find") return compactActivity(parts("find", argPart("path", args?.path), argPart("pattern", args?.pattern)));
+    if (toolName === "ls") return compactActivity(parts("ls", args?.path));
+    if (toolName === "edit") return compactActivity(parts("edit", args?.path));
+    if (toolName === "write") return compactActivity(parts("write", args?.path));
+    if (toolName === "bash") return compactActivity(parts("bash", args?.command));
+
+    return compactActivity(`${toolName} ${JSON.stringify(args ?? {})}`);
 }
 
 // ── Agent file parser ────────────────────────────────────────────────────────
@@ -225,7 +249,7 @@ export default function (pi: ExtensionAPI) {
 				task: "",
 				toolCount: 0,
 				elapsed: 0,
-				lastWork: "",
+				lastToolCall: "",
 				contextPct: 0,
 				cost: 0,
 				sessionCost: 0,
@@ -282,9 +306,9 @@ export default function (pi: ExtensionAPI) {
 		const ctxStr = `Last ctx ${Math.ceil(state.contextPct)}%`;
 		const ctxLine = theme.fg("dim", ctxStr);
 
-		const workRaw = state.task ? (state.lastWork || state.task) : state.def.description;
-		const workText = truncate(workRaw, Math.min(50, w - 1));
-		const workLine = theme.fg("muted", workText);
+		const toolRaw = state.lastToolCall ? state.lastToolCall : state.def.description;
+		const toolText = truncate(toolRaw, Math.min(50, w - 1));
+		const toolLine = theme.fg("muted", toolText);
 
 		const top = "┌" + "─".repeat(w) + "┐";
 		const bot = "└" + "─".repeat(w) + "┘";
@@ -304,7 +328,7 @@ export default function (pi: ExtensionAPI) {
 			border(" " + toolFileLine),
 			border(" " + ctxLine),
 			...(modelStr ? [border(" " + modelLine)] : []),
-			border(" " + workLine),
+			border(" " + toolLine),
 			theme.fg("dim", bot),
 		];
 	}
@@ -373,7 +397,7 @@ export default function (pi: ExtensionAPI) {
 		state.task = task;
 		state.toolCount = 0;
 		state.elapsed = 0;
-		state.lastWork = task;
+		state.lastToolCall = `task ${compactActivity(task)}`;
 		state.runCount++;
         state.inputTokens = 0;
         state.outputTokens = 0;
@@ -462,6 +486,8 @@ export default function (pi: ExtensionAPI) {
                         state.filesWritten.add(event.args.path);
                     }
 
+                    state.lastToolCall = describeToolCall(event.toolName, event.args);
+
                     updateWidget();
 				}
 				if (event.type === "agent_end") {
@@ -501,7 +527,6 @@ export default function (pi: ExtensionAPI) {
 			clearInterval(state.timer);
 			state.elapsed = Date.now() - startTime;
 			state.status = "done";
-			state.lastWork = output.split("\n").filter(l => l.trim()).pop() || task;
 			updateWidget();
 
             pi.appendEntry("agent-team-run", {
@@ -534,7 +559,7 @@ export default function (pi: ExtensionAPI) {
 			clearInterval(state.timer);
 			state.elapsed = Date.now() - startTime;
 			state.status = "error";
-			state.lastWork = err?.message || "error";
+			state.lastToolCall = err?.message || "error";
 			updateWidget();
 
             pi.appendEntry("agent-team-run", {
